@@ -2,8 +2,18 @@ from flask import Flask, request, jsonify
 import face_recognition
 import requests
 from io import BytesIO
+from PIL import Image
+import gc
 
 app = Flask(__name__)
+
+def resize_image(image_bytes, max_size=(800, 800)):
+    """Redimensiona a imagem para economizar memória"""
+    img = Image.open(BytesIO(image_bytes))
+    img.thumbnail(max_size)
+    buffer = BytesIO()
+    img.save(buffer, format="JPEG")
+    return buffer.getvalue()
 
 @app.route('/compare', methods=['POST'])
 def compare_faces():
@@ -22,7 +32,8 @@ def compare_faces():
         if search_response.status_code != 200:
             return jsonify({"error": f"Falha ao baixar imagem de busca: {search_response.status_code}"}), 400
 
-        search_image = face_recognition.load_image_file(BytesIO(search_response.content))
+        resized_search_image = resize_image(search_response.content)
+        search_image = face_recognition.load_image_file(BytesIO(resized_search_image))
         search_encodings = face_recognition.face_encodings(search_image)
 
         if not search_encodings:
@@ -39,7 +50,8 @@ def compare_faces():
                     print(f"Falha ao baixar imagem: {link}, status: {response.status_code}")
                     continue
 
-                img = face_recognition.load_image_file(BytesIO(response.content))
+                resized_bucket_image = resize_image(response.content)
+                img = face_recognition.load_image_file(BytesIO(resized_bucket_image))
                 encodings = face_recognition.face_encodings(img)
 
                 if not encodings:
@@ -50,18 +62,28 @@ def compare_faces():
                     result = face_recognition.compare_faces([encoding], search_encoding, tolerance=0.5)
                     if result[0]:
                         print(f"Semelhança encontrada: {link}")
-                        return jsonify({"match": link})  # ← achou, já retorna aqui!
+                        # Limpar memória antes de sair
+                        del search_image, search_encodings, search_encoding, img, encodings, encoding
+                        gc.collect()
+                        return jsonify({"match": link})
+
+                del img, encodings, resized_bucket_image
+                gc.collect()
 
             except Exception as e:
                 print(f"Erro ao processar imagem: {link}, erro: {e}")
 
-        return jsonify({"match": None})  # nenhum encontrado
+        # Limpar memória antes de sair
+        del search_image, search_encodings, search_encoding, resized_search_image
+        gc.collect()
+
+        return jsonify({"match": None})
 
     except Exception as e:
         import traceback
+        gc.collect()
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 if __name__ == '__main__':
     app.run(port=5000, debug=True)
-
 
